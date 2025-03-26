@@ -5,3 +5,4 @@ anthropic>=0.8.0
 python-dotenv>=1.0.0
 pydantic>=2.7.4,<3.0.0
 langsmith>=0.0.69 
+docker

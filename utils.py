@@ -130,22 +130,30 @@ def extract_code_from_markdown(markdown: str) -> List[Dict[str, str]]:
     while i < len(lines):
         line = lines[i]
         if line.startswith('```'):
+            # Extract language from the opening marker
             language = line[3:].strip()
             code_lines = []
             i += 1
             
+            # Collect code lines until we find the closing marker
             while i < len(lines) and not lines[i].startswith('```'):
                 code_lines.append(lines[i])
                 i += 1
-                
-            if i < len(lines):  # Skip the closing ```
+            
+            # Skip the closing marker
+            if i < len(lines):
                 i += 1
-                
-            code_blocks.append({
-                'language': language,
-                'code': '\n'.join(code_lines)
-            })
+            
+            # Join the code lines and clean up
+            code = '\n'.join(code_lines).strip()
+            
+            # Only add non-empty code blocks
+            if code:
+                code_blocks.append({
+                    'language': language,
+                    'code': code
+                })
         else:
             i += 1
-            
+    
     return code_blocks 

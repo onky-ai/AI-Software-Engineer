@@ -67,6 +67,13 @@ def run_interactive_mode(output_folder):
             continue
         
         response = agent.query(user_input)
+        
+        if output_folder:
+            agent._save_code_blocks_to_files(response)
+            
+            # Also try to extract project structure and create directories
+            agent._create_project_structure(response)
+            
         print("\nAgent:", response)
         print()
 

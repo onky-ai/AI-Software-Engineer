@@ -1,3 +1,4 @@
+import json
 from typing import Dict, List, Any, Optional
 from langchain_anthropic import ChatAnthropic
 from langchain.schema import HumanMessage, SystemMessage, AIMessage
@@ -79,16 +80,20 @@ class SoftwareDevelopmentAgent:
         Clear the conversation history.
         """
         self.history = []
-    
-    def query(self, user_input: str) -> str:
+
+    # This method is used to query the agent with a user input.
+    # It stores the user input in the history.
+    # It is used to generate code for the code generation node in the workflow.
+    def query(self, user_input: str, output_schema: Optional[BaseModel] = None) -> Any:
         """
         Query the agent with a user input.
         
         Args:
             user_input: The user input
+            output_schema: Optional schema for structured output
             
         Returns:
-            The agent's response
+            The agent's response, either as a string or structured according to output_schema
         """
         # Add the user input to the history
         self.add_to_history("human", user_input)
@@ -104,20 +109,191 @@ class SoftwareDevelopmentAgent:
                 messages.append(AIMessage(content=message["content"]))
         
         # Get the response from the LLM
+        if output_schema:
+            # Get structured response if schema is provided
+            llm_with_structured_output = self.llm.with_structured_output(output_schema)
+            response = llm_with_structured_output.invoke(messages)
+            # Add the raw response to the history (convert structured output to string)
+            self.add_to_history("assistant", json.dumps(response.model_dump(), indent=2))
+        else:
+            # Get regular response
+            response = self.llm.invoke(messages)
+            # Add the response to the history
+            self.add_to_history("assistant", response.content)
+            
+        return response if output_schema else response.content
+  
+    # # This method is used to query the agent with a user input and get a structured output.
+    # def query_with_structured_output(self, user_input: str, output_schema: BaseModel) -> Dict:
+    #     """
+    #     Query the agent with a user input and get a structured output.
+        
+    #     Args:
+    #         user_input: The user input
+    #         output_schema: The schema for the structured output
+            
+    #     Returns:
+    #         The agent's response as a structured output according to the schema
+    #     """
+    #     # Add the user input to the history
+    #     self.add_to_history("human", user_input)
+        
+    #     # Create messages for the LLM
+    #     messages = [SystemMessage(content=self.system_prompt)]
+        
+    #     # Add the conversation history
+    #     for message in self.history:
+    #         if message["role"] == "human":
+    #             messages.append(HumanMessage(content=message["content"]))
+    #         elif message["role"] == "assistant":
+    #             messages.append(AIMessage(content=message["content"]))
+        
+    #     # Get the structured response from the LLM
+    #     llm_with_structured_output = self.llm.with_structured_output(output_schema)
+    #     structured_response = llm_with_structured_output.invoke(messages)
+        
+    #     # Add the raw response to the history (convert structured output to string)
+    #     # Convert BaseModel to dict first, then to JSON string
+    #     self.add_to_history("assistant", json.dumps(structured_response.model_dump(), indent=2))
+        
+    #     return structured_response
+
+    def generate_code(self, prompt: str, language: str, filename: Optional[str] = None) -> str:
+        """
+        Generate code based on a prompt.
+        
+        Args:
+            prompt: The prompt for code generation
+            language: The programming language
+            filename: Optional filename to save the generated code
+            
+        Returns:
+            The generated code
+        """
+        code_prompt = f"""
+        Generate {language} code based on the following requirements:
+        
+        {prompt}
+        
+        Please provide only the code without explanations. Make sure the code is complete, functional, and follows best practices.
+        Format the code with proper markdown code blocks using ```{language} as the opening marker.
+        """
+        
+        # do not add user prompt and code prompt to the history
+        response = self._query_code_generation(code_prompt)
+        
+        # Extract code from the response
+        code_blocks = extract_code_from_markdown(response)
+        
+        if code_blocks:
+            # Use the first code block that matches the requested language
+            for block in code_blocks:
+                if block['language'].lower() == language.lower():
+                    code = block['code']
+                    
+                    # Save the code to a file if output folder is specified and filename is provided
+                    if self.output_folder and filename:
+                        file_path = os.path.join(self.output_folder, filename)
+                        write_file(file_path, code)
+                    
+                    return code
+            
+            # If no matching language block found, use the first block
+            code = code_blocks[0]['code']
+            
+            # Save the code to a file if output folder is specified and filename is provided
+            if self.output_folder and filename:
+                file_path = os.path.join(self.output_folder, filename)
+                write_file(file_path, code)
+            
+            return code
+        else:
+            return response
+    
+    def explain_code(self, code: str, language: str) -> str:
+        """
+        Explain the provided code.
+        
+        Args:
+            code: The code to explain
+            language: The programming language
+            
+        Returns:
+            The explanation
+        """
+        explain_prompt = f"""
+        Please explain the following {language} code in detail:
+        
+        ```{language}
+        {code}
+        ```
+        
+        Include information about:
+        1. What the code does
+        2. How it works
+        3. Any important patterns or techniques used
+        4. Potential improvements or issues
+        """
+        
+        return self.query(explain_prompt)
+    
+    def debug_code(self, code: str, error_message: str, language: str) -> str:
+        """
+        Debug the provided code.
+        
+        Args:
+            code: The code to debug
+            error_message: The error message
+            language: The programming language
+            
+        Returns:
+            The debugged code or explanation
+        """
+        debug_prompt = f"""
+        Please debug the following {language} code that is producing this error:
+        
+        Error:
+        {error_message}
+        
+        Code:
+        ```{language}
+        {code}
+        ```
+        
+        Identify the issue and provide a fixed version of the code.
+        """
+        
+        return self.query(debug_prompt) 
+
+    # This method is used to generate code for the code generation node in the workflow.
+    # It does not store the user input in the history.
+    def _query_code_generation(self, user_input: str) -> str:
+        """
+        Query the agent with a user input.
+        
+        Args:
+            user_input: The user input
+            
+        Returns:
+            The agent's response
+        """
+        
+        # Create messages for the LLM
+        messages = [SystemMessage(content=self.system_prompt)]
+        
+        # Add the conversation history
+        for message in self.history:
+            if message["role"] == "human":
+                messages.append(HumanMessage(content=message["content"]))
+            elif message["role"] == "assistant":
+                messages.append(AIMessage(content=message["content"]))
+        
+        # Get the response from the LLM
+        messages.append(HumanMessage(content=user_input))
         response = self.llm.invoke(messages)
         
-        # Add the response to the history
-        self.add_to_history("assistant", response.content)
-        
-        # If output folder is specified, save any code blocks to files
-        if self.output_folder:
-            self._save_code_blocks_to_files(response.content)
-            
-            # Also try to extract project structure and create directories
-            self._create_project_structure(response.content)
-        
         return response.content
-    
+      
     def _extract_filename_from_content(self, content: str, block_index: int) -> Optional[str]:
         """
         Try to extract a filename from the content for a specific code block.
@@ -133,35 +309,13 @@ class SoftwareDevelopmentAgent:
         patterns = [
             r'save (?:this|the code) (?:to|as) [\'"]?([a-zA-Z0-9_\-\.\/]+)[\'"]?',
             r'create a file (?:named|called) [\'"]?([a-zA-Z0-9_\-\.\/]+)[\'"]?',
-            r'filename:? [\'"]?([a-zA-Z0-9_\-\.\/]+)[\'"]?',
-            r'file:? [\'"]?([a-zA-Z0-9_\-\.\/]+)[\'"]?',
+            r'filename:?\s*[\'"]?([a-zA-Z0-9_\-\.\/]+)[\'"]?',
+            r'file:?\s*[\'"]?([a-zA-Z0-9_\-\.\/]+)[\'"]?',
             r'save (?:this|the code) in [\'"]?([a-zA-Z0-9_\-\.\/]+)[\'"]?',
             r'name the file [\'"]?([a-zA-Z0-9_\-\.\/]+)[\'"]?',
             r'`([a-zA-Z0-9_\-\.\/]+)`'
         ]
-        
-        # First, try to find a filename specifically for this code block
-        code_blocks = extract_code_from_markdown(content)
-        if 0 <= block_index < len(code_blocks):
-            code_block = code_blocks[block_index]
-            language = code_block.get('language', '').strip().lower()
             
-            # Look for common filenames based on language
-            if language == 'python':
-                if 'hello world' in content.lower():
-                    return 'hello_world.py'
-                if 'main' in code_block.get('code', '').lower():
-                    return 'main.py'
-            elif language == 'javascript':
-                if 'hello world' in content.lower():
-                    return 'hello_world.js'
-                if 'main' in code_block.get('code', '').lower():
-                    return 'main.js'
-            elif language == 'html':
-                return 'index.html'
-            elif language == 'css':
-                return 'styles.css'
-        
         # Try to find a filename in the content
         for pattern in patterns:
             matches = re.finditer(pattern, content, re.IGNORECASE)
@@ -170,7 +324,10 @@ class SoftwareDevelopmentAgent:
             current_block = 0
             for match in matches:
                 if current_block == block_index:
-                    return match.group(1)
+                    filename = match.group(1)
+                    # Clean the filename by removing any prefix like "Filename:" or "File:"
+                    filename = re.sub(r'^(?:filename|file):\s*', '', filename, flags=re.IGNORECASE)
+                    return filename.strip()
                 current_block += 1
         
         return None
@@ -277,96 +434,3 @@ class SoftwareDevelopmentAgent:
             
             # Save the code to a file
             write_file(file_path, code)
-    
-    def generate_code(self, prompt: str, language: str, filename: Optional[str] = None) -> str:
-        """
-        Generate code based on a prompt.
-        
-        Args:
-            prompt: The prompt for code generation
-            language: The programming language
-            filename: Optional filename to save the generated code
-            
-        Returns:
-            The generated code
-        """
-        code_prompt = f"""
-        Generate {language} code based on the following requirements:
-        
-        {prompt}
-        
-        Please provide only the code without explanations. Make sure the code is complete, functional, and follows best practices.
-        """
-        
-        response = self.query(code_prompt)
-        
-        # Extract code from the response
-        code_pattern = r"```(?:{})?(.+?)```".format(language)
-        code_match = re.search(code_pattern, response, re.DOTALL)
-        
-        if code_match:
-            code = code_match.group(1).strip()
-            
-            # Save the code to a file if output folder is specified and filename is provided
-            if self.output_folder and filename:
-                file_path = os.path.join(self.output_folder, filename)
-                write_file(file_path, code)
-                
-            return code
-        else:
-            return response
-    
-    def explain_code(self, code: str, language: str) -> str:
-        """
-        Explain the provided code.
-        
-        Args:
-            code: The code to explain
-            language: The programming language
-            
-        Returns:
-            The explanation
-        """
-        explain_prompt = f"""
-        Please explain the following {language} code in detail:
-        
-        ```{language}
-        {code}
-        ```
-        
-        Include information about:
-        1. What the code does
-        2. How it works
-        3. Any important patterns or techniques used
-        4. Potential improvements or issues
-        """
-        
-        return self.query(explain_prompt)
-    
-    def debug_code(self, code: str, error_message: str, language: str) -> str:
-        """
-        Debug the provided code.
-        
-        Args:
-            code: The code to debug
-            error_message: The error message
-            language: The programming language
-            
-        Returns:
-            The debugged code or explanation
-        """
-        debug_prompt = f"""
-        Please debug the following {language} code that is producing this error:
-        
-        Error:
-        {error_message}
-        
-        Code:
-        ```{language}
-        {code}
-        ```
-        
-        Identify the issue and provide a fixed version of the code.
-        """
-        
-        return self.query(debug_prompt) 

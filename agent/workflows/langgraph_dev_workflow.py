@@ -1,19 +1,17 @@
-import re
-from typing import Dict, List, Any, Optional, TypedDict, Annotated, Literal, Union
-from langchain.schema import HumanMessage, SystemMessage, AIMessage
+from typing import Dict, List, Any, Optional, TypedDict, Literal
 from langgraph.graph import StateGraph, START, END
-import json
 import os
 import sys
 from langsmith import traceable
-from langsmith.run_trees import RunTree
+from pydantic import BaseModel, Field
 
 # Add the parent directory to the path so we can import from the root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from agent.agent import SoftwareDevelopmentAgent
+from agent.docker_utils import run_in_docker
 from config import DEFAULT_SYSTEM_PROMPT, LANGCHAIN_PROJECT, LANGCHAIN_ENDPOINT
-from agent.langsmith_utils import is_tracing_enabled, trace_llm_call, trace_tool_usage, create_trace_id
+from agent.langsmith_utils import is_tracing_enabled, trace_tool_usage, create_trace_id
 
 # Define the state type for our workflow
 class WorkflowState(TypedDict):
@@ -21,62 +19,73 @@ class WorkflowState(TypedDict):
     current_step: str
     requirements: List[str]
     design: Dict[str, Any]
-    implementation_plan: List[str]
+    project_structure: Dict[str, Any]
     code_files: Dict[str, str]
+    file_dependencies: Dict[str, List[str]]
     documentation: str
     messages: List[Dict[str, str]]
     output_folder: Optional[str]
     trace_id: Optional[str]
 
+# Define the requirements output model
+class RequirementsOutput(BaseModel):
+    requirements: List[str] = Field(description="List of clear requirements extracted from the task")
+    file_dependencies: List[str] = Field(description="Dependencies between requirements", default_factory=list)
+        
+class ProjectStructureOutput(BaseModel):
+    """Output model for the project structure step of the workflow."""
+    files: List[str] = Field(description="List of files to be created", default_factory=list)
+    description: str = Field(description="Description of the files to be created")
+
+class DesignOutput(BaseModel):
+    architecture: str = Field(description="Overview of the system architecture")
+    components: List[str] = Field(description="Main components of the system")
+    data_models: List[str] = Field(description="Data models used in the system")
+    api_endpoints: Optional[List[str]] = Field(default=[], description="API endpoints if applicable")
+    dependencies: List[str] = Field(description="Dependencies and libraries needed")
+        
+
 # Define the workflow steps
-@traceable(run_type="chain", name="analyze_requirements")
 def analyze_requirements(state: WorkflowState) -> WorkflowState:
     """Analyze the task and extract requirements"""
     agent = SoftwareDevelopmentAgent()
     
     prompt = f"""
     Analyze the following software development task and extract clear requirements:
-    
+ 
     {state["task"]}
     
-    Please provide a structured list of requirements that need to be implemented.
-    Return only the requirements, no other text. 
-    List each requirement on a separate line.
+    Please provide a structured list of requirements that need to be implemented and dependencies between them. 
+    Keep all requirements super minimal - focus only on the absolute essential requirements needed to accomplish the task.
     """
     
-    response = agent.query(prompt)
-    
-    # Trace the LLM call if tracing is enabled
-    if is_tracing_enabled() and state.get("trace_id"):
-        trace_llm_call(
-            model=agent.llm.model,
-            prompt=prompt,
-            response=response,
-            metadata={
-                "step": "analyze_requirements",
-                "trace_id": state["trace_id"]
-            }
-        )
-    
-    state["requirements"] = [req.strip() for req in response.split("\n") if req.strip()]
+    response = agent.query(prompt, RequirementsOutput)
+    state["requirements"] = response.requirements
+    state["file_dependencies"] = response.file_dependencies
     state["messages"].append({"role": "system", "content": f"Requirements analyzed: {len(state['requirements'])} requirements identified"})
     state["current_step"] = "requirements_analyzed"
     
     print(f"Analyze Requirements: {state['requirements']}")
+
     return state
 
-@traceable(run_type="chain", name="create_design")
 def create_design(state: WorkflowState) -> WorkflowState:
     """Create a high-level design based on requirements"""
     agent = SoftwareDevelopmentAgent()
     
     requirements_text = "\n".join([f"- {req}" for req in state["requirements"]])
+    dependencies_text = "\n".join([f"- {dep}" for dep in state["file_dependencies"]])
+
     prompt = f"""
     Based on these requirements:
-    
+
     {requirements_text}
-    
-    Create a high-level software design including:
+
+    and dependencies between them:
+
+    {dependencies_text}
+
+    Create a high-level software design that focuses on simplicity
     1. Architecture overview
     2. Main components
     3. Data models
@@ -86,292 +95,270 @@ def create_design(state: WorkflowState) -> WorkflowState:
     Provide the design in a structured format.
     """
     
-    response = agent.query(prompt)
-    
-    # Trace the LLM call if tracing is enabled
-    if is_tracing_enabled() and state.get("trace_id"):
-        trace_llm_call(
-            model=agent.llm.model,
-            prompt=prompt,
-            response=response,
-            metadata={
-                "step": "create_design",
-                "trace_id": state["trace_id"]
-            }
-        )
-    
-    # Parse the response into a structured design
+    response = agent.query(prompt, DesignOutput)
+
     state["design"] = {
-        "description": response,
-        "components": [],
-        "data_models": [],
-        "dependencies": []
-    }
-    
-    state["messages"].append({"role": "system", "content": "Design created"})
-    state["current_step"] = "design_created"
-    
+            "description": response.architecture,
+            "components": response.components,
+            "data_models": response.data_models,
+            "dependencies": response.dependencies,
+            "api_endpoints": response.api_endpoints
+        }
+    state["messages"].append({"roke" : "system", "content" : "Design created"})
+    state["current_step"] = "desing_created"
+
     return state
 
-@traceable(run_type="chain", name="create_implementation_plan")
-def create_implementation_plan(state: WorkflowState) -> WorkflowState:
-    """Create an implementation plan based on the design"""
+def propose_project_structure(state: WorkflowState) -> WorkflowState:
+    """Propose a project structure based on the design"""
     agent = SoftwareDevelopmentAgent()
     
     prompt = f"""
     Based on this design:
     
+    1. Design description:
+    
     {state["design"]["description"]}
+   
+    2. Design components:
     
-    Create a step-by-step implementation plan. List the files that need to be created
-    and the order in which they should be implemented.
+    {state["design"]["components"]}
+    
+    3. Design data models:
+    
+    {state["design"]["data_models"]}
+    
+    4. Design API endpoints:
+    
+    {state["design"]["api_endpoints"]}
+    
+    5. Design dependencies:
+    
+    {state["design"]["dependencies"]}
+
+    Create a minimal project structure with only the essential directories and files needed.
+    Each file must be a separate artifact as a code generation task will be generated for each file separately.
+    Focus on simplicity and avoid creating any unnecessary files or directories.
+
+    Return only the files with full path, one per line, without any additional text.
     """
-    
-    response = agent.query(prompt)
-    
-    # Trace the LLM call if tracing is enabled
-    if is_tracing_enabled() and state.get("trace_id"):
-        trace_llm_call(
-            model=agent.llm.model,
-            prompt=prompt,
-            response=response,
-            metadata={
-                "step": "create_implementation_plan",
-                "trace_id": state["trace_id"]
-            }
-        )
-    
-    state["implementation_plan"] = [step.strip() for step in response.split("\n") if step.strip()]
-    state["messages"].append({"role": "system", "content": f"Implementation plan created with {len(state['implementation_plan'])} steps"})
-    state["current_step"] = "implementation_plan_created"
-    
+      
+    response = agent.query(prompt, ProjectStructureOutput)
+     
+    state["project_structure"] = { "description": response.description, "files": response.files }
+    state["messages"].append({"role": "system", "content": "Project structure proposed"})
+    state["current_step"] = "project_structure_proposed"
+  
     return state
 
-@traceable(run_type="chain", name="implement_code")
-def implement_code(state: WorkflowState) -> WorkflowState:
-    """Implement the code based on the implementation plan"""
+def generate_files(state: WorkflowState) -> WorkflowState:
+    """Generate each file as a separate artifact"""
     agent = SoftwareDevelopmentAgent(output_folder=state["output_folder"])
     state["code_files"] = {}
+    state["file_dependencies"] = {}
     
-    # Extract file names from implementation plan
-    file_pattern = r'`([^`]+\.[a-zA-Z0-9]+)`'
-    all_files = []
-    
-    for step in state["implementation_plan"]:
-        matches = re.findall(file_pattern, step)
-        all_files.extend(matches)
-    
-    # If no files were found in the format, ask the agent to identify files
-    if not all_files:
-        prompt = f"""
-        Based on the implementation plan and design, list all the files that need to be created
-        for this project. Format each filename on a new line.
-        
-        Design: {state["design"]["description"]}
-        """
-        
-        response = agent.query(prompt)
-        
-        # Trace the LLM call if tracing is enabled
-        if is_tracing_enabled() and state.get("trace_id"):
-            trace_llm_call(
-                model=agent.llm.model,
-                prompt=prompt,
-                response=response,
-                metadata={
-                    "step": "implement_code_file_list",
-                    "trace_id": state["trace_id"]
-                }
-            )
-        
-        all_files = [line.strip() for line in response.split("\n") if line.strip() and "." in line]
-    
-    # Remove duplicates while preserving order
-    unique_files = []
-    for file in all_files:
-        if file not in unique_files:
-            unique_files.append(file)
+    files_to_create = state["project_structure"]["files"]
     
     # Generate code for each file
-    for file_name in unique_files:
-        prompt = f"""
-        Create the code for the file `{file_name}` based on:
-        
-        Requirements:
-        {chr(10).join([f"- {req}" for req in state["requirements"]])}
-        
-        Design:
-        {state["design"]["description"]}
-        
-        Provide only the code, properly formatted and complete.
-        Make sure to include all necessary imports and dependencies.
-        """
-        
+    for file_name in files_to_create:
         # Get the language from the file extension
-        language = file_name.split(".")[-1]
+        language = file_name.split(".")[-1] if "." in file_name else "txt"
+        
+        prompt = f"""
+            Create the code for the file `{file_name}` based on:
+            
+            Requirements:
+            {chr(10).join([f"- {req}" for req in state["requirements"]])}
+            
+            Design:
+            {state["design"]["description"]}
+            
+            Project Structure:
+            {state["project_structure"]["files"]}
+            
+            Provide only the code, properly formatted and complete.
+            Make sure to include all necessary imports and dependencies.
+            """
         
         # Generate the code
-        code = agent.generate_code(prompt, language, file_name)
+        content = agent.generate_code(prompt, language, file_name)
         
-        # Trace the LLM call if tracing is enabled
-        if is_tracing_enabled() and state.get("trace_id"):
-            trace_llm_call(
-                model=agent.llm.model,
-                prompt=prompt,
-                response=code,
-                metadata={
-                    "step": f"implement_code_{file_name}",
-                    "file_name": file_name,
-                    "language": language,
-                    "trace_id": state["trace_id"]
-                }
-            )
-        
-        state["code_files"][file_name] = code
-        
-        # The agent will automatically save the file to the output folder
-        state["messages"].append({"role": "system", "content": f"Created file: {file_name}"})
-        
-        # Trace tool usage for file creation
-        if is_tracing_enabled() and state.get("trace_id"):
-            trace_tool_usage(
-                tool_name="file_write",
-                input_data={
-                    "file_name": file_name,
-                    "content": code
-                },
-                output_data=f"File {file_name} created successfully",
-                metadata={
-                    "step": "implement_code",
-                    "file_name": file_name,
-                    "trace_id": state["trace_id"]
-                }
-            )
-    
-    # Create any necessary directory structure
-    if state["output_folder"]:
-        # Extract directory structure from design or implementation plan
-        dir_structure_prompt = f"""
-        Based on the implementation plan and design, list all the directories that need to be created
-        for this project. Format each directory path on a new line.
-        
-        Design: {state["design"]["description"]}
-        Implementation Plan: {chr(10).join(state["implementation_plan"])}
-        """
-        
-        dir_response = agent.query(dir_structure_prompt)
-        
-        # Trace the LLM call if tracing is enabled
-        if is_tracing_enabled() and state.get("trace_id"):
-            trace_llm_call(
-                model=agent.llm.model,
-                prompt=dir_structure_prompt,
-                response=dir_response,
-                metadata={
-                    "step": "directory_structure",
-                    "trace_id": state["trace_id"]
-                }
-            )
-        
-        directories = [line.strip() for line in dir_response.split("\n") if line.strip() and "/" in line and not "." in line.split("/")[-1]]
-        
-        # Create directories
-        from utils import ensure_directory
-        for directory in directories:
-            dir_path = os.path.join(state["output_folder"], directory)
-            ensure_directory(dir_path)
-            state["messages"].append({"role": "system", "content": f"Created directory: {directory}"})
+        # Save the file
+        if state["output_folder"]:
+            # Create any necessary directories
+            file_path = os.path.join(state["output_folder"], file_name)
+            os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
             
-            # Trace tool usage for directory creation
+            with open(file_path, "w") as f:
+                f.write(content)
+            
+            # Trace tool usage for file creation
             if is_tracing_enabled() and state.get("trace_id"):
                 trace_tool_usage(
-                    tool_name="create_directory",
+                    tool_name="file_write",
                     input_data={
-                        "directory": directory
+                        "file_name": file_name,
+                        "content": content
                     },
-                    output_data=f"Directory {directory} created successfully",
+                    output_data=f"File {file_name} created successfully",
                     metadata={
-                        "step": "implement_code",
-                        "directory": directory,
+                        "step": "generate_files",
+                        "file_name": file_name,
                         "trace_id": state["trace_id"]
                     }
                 )
+        
+        state["code_files"][file_name] = content
     
-    state["current_step"] = "code_implemented"
+    state["current_step"] = "files_generated"
     return state
 
-@traceable(run_type="chain", name="create_documentation")
-def create_documentation(state: WorkflowState) -> WorkflowState:
-    """Create documentation for the project"""
-    agent = SoftwareDevelopmentAgent()
+# @traceable(run_type="chain", name="verify_completeness")
+# def verify_completeness(state: WorkflowState) -> WorkflowState:
+#     """Verify each file's completeness"""
+#     agent = SoftwareDevelopmentAgent()
     
-    files_list = "\n".join([f"- {file_name}" for file_name in state["code_files"].keys()])
-    
-    prompt = f"""
-    Create comprehensive documentation for this software project:
-    
-    Requirements:
-    {chr(10).join([f"- {req}" for req in state["requirements"]])}
-    
-    Design:
-    {state["design"]["description"]}
-    
-    Files implemented:
-    {files_list}
-    
-    Include:
-    1. Project overview
-    2. Installation instructions
-    3. Usage examples
-    4. API documentation (if applicable)
-    5. Configuration options
-    """
-    
-    response = agent.query(prompt)
-    
-    # Trace the LLM call if tracing is enabled
-    if is_tracing_enabled() and state.get("trace_id"):
-        trace_llm_call(
-            model=agent.llm.model,
-            prompt=prompt,
-            response=response,
-            metadata={
-                "step": "create_documentation",
-                "trace_id": state["trace_id"]
-            }
-        )
-    
-    state["documentation"] = response
-    
-    # Save documentation if output folder is specified
-    if state["output_folder"]:
-        doc_path = os.path.join(state["output_folder"], "README.md")
-        with open(doc_path, "w") as f:
-            f.write(state["documentation"])
+#     for file_name, code in state["code_files"].items():
+#         language = file_name.split(".")[-1]
         
-        # Trace tool usage for file creation
-        if is_tracing_enabled() and state.get("trace_id"):
-            trace_tool_usage(
-                tool_name="file_write",
-                input_data={
-                    "file_name": "README.md",
-                    "content": state["documentation"]
-                },
-                output_data=f"File README.md created successfully",
-                metadata={
-                    "step": "create_documentation",
-                    "file_name": "README.md",
-                    "trace_id": state["trace_id"]
-                }
-            )
+#         prompt = f"""
+#         Verify the completeness of this {language} file:
+        
+#         File: {file_name}
+#         Code:
+#         ```{language}
+#         {code}
+#         ```
+        
+#         Analyze the code for completeness, including imports, dependencies,
+#         function implementations, error handling, and documentation.
+#         """
+        
+#         try:
+#             completeness_output = agent.query(prompt)
+            
+#             if not completeness_output.complete:
+#                 # Generate updated code if issues found
+#                 missing_elements = completeness_output.missing_elements.get(file_name, [])
+#                 suggestions = completeness_output.suggestions.get(file_name, [])
+                
+#                 update_prompt = f"""
+#                 Update the code for {file_name} to address these issues:
+#                 {completeness_output}
+                
+#                 Original code:
+#                 ```{language}
+#                 {code}
+#                 ```
+#                 """
+                
+#                 file_output = agent.query_with_structured_output(update_prompt, FileGenerationOutput)
+#                 state["code_files"][file_name] = file_output.content
+#                 state["messages"].append({
+#                     "role": "system", 
+#                     "content": f"Updated file {file_name} with completeness score: {completeness_output.quality_score.get(file_name, 0)}"
+#                 })
+#         except Exception as e:
+#             print(f"Error in completeness verification for {file_name}: {e}")
+#             # Fallback to simple verification
+#             response = agent.query(prompt)
+#             if "missing" in response.lower() or "needed" in response.lower():
+#                 updated_code = agent.generate_code(prompt, language, file_name)
+#                 state["code_files"][file_name] = updated_code
     
-    state["messages"].append({"role": "system", "content": "Documentation created"})
-    state["current_step"] = "documentation_created"
+#     state["current_step"] = "completeness_verified"
+#     return state
+
+# @traceable(run_type="chain", name="create_documentation")
+# def create_documentation(state: WorkflowState) -> WorkflowState:
+#     """Create documentation for the project"""
+#     agent = SoftwareDevelopmentAgent()
     
-    return state
+#     files_list = "\n".join([f"- {file_name}" for file_name in state["code_files"].keys()])
+#     dependencies = json.dumps(state["file_dependencies"], indent=2)
+    
+#     prompt = f"""
+#     Create comprehensive documentation for this software project:
+    
+#     Requirements:
+#     {chr(10).join([f"- {req}" for req in state["requirements"]])}
+    
+#     Design:
+#     {state["design"]["description"]}
+    
+#     Project Structure:
+#     {state["project_structure"]["description"]}
+    
+#     Files:
+#     {files_list}
+    
+#     Dependencies:
+#     {dependencies}
+#     """
+    
+#     try:
+#         doc_output = agent.query(prompt)
+        
+#         # Create README.md content
+#         documentation = f"""# {doc_output.overview}
+
+# ## Installation
+# {doc_output.installation}
+
+# ## Usage
+# {doc_output.usage}
+
+# ## API Documentation
+# {chr(10).join([f"### {component}{chr(10)}{docs}" for component, docs in doc_output.api_docs.items()])}
+
+# ## Examples
+# {chr(10).join([f"- {example}" for example in doc_output.examples])}
+
+# ## File Structure
+# {chr(10).join([f"- {file}: {desc}" for file, desc in doc_output.file_descriptions.items()])}
+# """
+        
+#         state["documentation"] = documentation
+        
+#         # Save documentation if output folder is specified
+#         if state["output_folder"]:
+#             doc_path = os.path.join(state["output_folder"], "README.md")
+#             with open(doc_path, "w") as f:
+#                 f.write(documentation)
+            
+#             if is_tracing_enabled() and state.get("trace_id"):
+#                 trace_tool_usage(
+#                     tool_name="file_write",
+#                     input_data={
+#                         "file_name": "README.md",
+#                         "content": documentation
+#                     },
+#                     output_data=f"File README.md created successfully",
+#                     metadata={
+#                         "step": "create_documentation",
+#                         "file_name": "README.md",
+#                         "trace_id": state["trace_id"]
+#                     }
+#                 )
+        
+#         state["messages"].append({"role": "system", "content": "Documentation created"})
+#         state["current_step"] = "documentation_created"
+        
+#     except Exception as e:
+#         print(f"Error in documentation creation: {e}")
+#         # Fallback to simple documentation
+#         response = agent.query(prompt)
+#         state["documentation"] = response
+        
+#         if state["output_folder"]:
+#             doc_path = os.path.join(state["output_folder"], "README.md")
+#             with open(doc_path, "w") as f:
+#                 f.write(response)
+    
+#     return state
 
 @traceable(run_type="chain", name="router")
-def router(state: WorkflowState) -> Literal["analyze_requirements", "create_design", "create_implementation_plan", "implement_code", "create_documentation", "END"]:
+def router(state: WorkflowState) -> Literal["analyze_requirements", "create_design", "propose_project_structure", "generate_files", "verify_dependencies", "verify_completeness", "create_documentation", "END"]:
     """Route to the next step based on the current state"""
     current_step = state.get("current_step", "")
     
@@ -380,17 +367,21 @@ def router(state: WorkflowState) -> Literal["analyze_requirements", "create_desi
     elif current_step == "requirements_analyzed":
         return "create_design"
     elif current_step == "design_created":
-        return "create_implementation_plan"
-    elif current_step == "implementation_plan_created":
-        return "implement_code"
-    elif current_step == "code_implemented":
+        return "propose_project_structure"
+    elif current_step == "project_structure_proposed":
+        return "generate_files"
+    elif current_step == "files_generated":
+        return "verify_dependencies"
+    elif current_step == "dependencies_verified":
+        return "verify_completeness"
+    elif current_step == "completeness_verified":
         return "create_documentation"
     elif current_step == "documentation_created":
         return "END"
     else:
         return "analyze_requirements"
 
-# Create the workflow graph
+# Create the workflow graph with only 2 nodes: create_design and generate_files
 @traceable(run_type="chain", name="create_workflow_graph")
 def create_workflow_graph() -> StateGraph:
     """Create the workflow graph"""
@@ -399,66 +390,106 @@ def create_workflow_graph() -> StateGraph:
     # Add nodes
     workflow.add_node("analyze_requirements", analyze_requirements)
     workflow.add_node("create_design", create_design)
-    workflow.add_node("create_implementation_plan", create_implementation_plan)
-    workflow.add_node("implement_code", implement_code)
-    workflow.add_node("create_documentation", create_documentation)
-    
+    workflow.add_node("propose_project_structure", propose_project_structure)
+    workflow.add_node("generate_files", generate_files)
+
     # Add edge from START to first node
     workflow.add_edge(START, "analyze_requirements")
+    workflow.add_edge("analyze_requirements", "create_design")
+    workflow.add_edge("create_design", "propose_project_structure")
+    workflow.add_edge("propose_project_structure", "generate_files")
+    workflow.add_edge("generate_files", END)
 
 
-    # Add conditional edges between nodes
-    workflow.add_conditional_edges(
-        "analyze_requirements",
-        router,
-        {
-            "create_design": "create_design",
-            "create_implementation_plan": "create_implementation_plan",
-            "implement_code": "implement_code",
-            "create_documentation": "create_documentation",
-            "END": END
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "create_design",
-        router,
-        {
-            "create_implementation_plan": "create_implementation_plan",
-            "implement_code": "implement_code",
-            "create_documentation": "create_documentation",
-            "END": END
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "create_implementation_plan",
-        router,
-        {
-            "implement_code": "implement_code",
-            "create_documentation": "create_documentation",
-            "END": END
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "implement_code",
-        router,
-        {
-            "create_documentation": "create_documentation",
-            "END": END
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "create_documentation",
-        router,
-        {
-            "END": END
-        }
-    )
-    
     return workflow
+
+# Python runner will run the tests in the container
+def python_runner_tester(state: WorkflowState, host_project_dir: Optional[str] = None) -> Dict:
+    """
+    Tester node implementation using Docker execution.
+    """
+    if not host_project_dir:
+        print("Error: Output folder not specified.")
+        return {"test_results": {"setup_error": "Output folder not specified"}, "error_logs": [], "build_status": "Testing Failed"}
+    
+    print("--- Entering Tester Node ---")
+    test_results = {}
+    error_logs = state.get("error_logs", [])
+    dependencies_updated = False # Flag to track if we installed deps
+
+    # --- Step 1: Ensure project directory exists (File Manager node should create it) ---
+    if not os.path.exists(host_project_dir):
+         print(f"Error: Project directory {host_project_dir} not found.")
+         error_logs.append(f"Tester Error: Project directory {host_project_dir} not found.")
+         return {"test_results": {"setup_error": "Project directory missing"}, "error_logs": error_logs, "build_status": "Testing Failed"}
+
+    # --- Step 2: Install Dependencies (if requirements.txt exists) ---
+    requirements_path = os.path.join(host_project_dir, "requirements.txt")
+    if os.path.exists(requirements_path):
+        print("Found requirements.txt, installing dependencies in Docker...")
+        # Adjust command if pip is not directly runnable or needs activation
+        dep_command = ["pip", "install", "-r", "requirements.txt"]
+        exit_code, stdout, stderr = run_in_docker(dep_command, host_project_dir)
+
+        if exit_code != 0:
+            print(f"ERROR: Failed to install dependencies. Exit code: {exit_code}")
+            print(f"Stderr:\n{stderr}")
+            error_logs.append(f"Dependency Installation Failed (Exit Code {exit_code}):\n{stderr}")
+            # Consider stopping here or trying tests anyway
+            return {"test_results": {"dependency_error": "Failed"}, "error_logs": error_logs, "build_status": "Testing Failed"}
+        else:
+            print("Dependencies installed successfully.")
+            print(f"Stdout:\n{stdout}")
+            dependencies_updated = True
+            # Add stdout to logs if verbose logging is desired
+            # error_logs.append(f"Dependency Installation Log:\n{stdout}")
+    else:
+        print("No requirements.txt found, skipping dependency installation.")
+
+
+    # --- Step 3: Run Tests (Example using pytest) ---
+    # Adapt this command based on the testing framework expected/generated
+    test_command = ["pytest"] # Or ["python", "run_tests.py"], etc.
+    print(f"Running tests using command: {' '.join(test_command)}")
+    exit_code, stdout, stderr = run_in_docker(test_command, host_project_dir)
+
+    print(f"Test execution finished. Exit Code: {exit_code}")
+    print(f"Stdout:\n{stdout}")
+    if stderr:
+        print(f"Stderr:\n{stderr}")
+
+    # --- Step 4: Parse Results ---
+    # This is highly dependent on the test runner's output format
+    # Simple example: Check exit code and look for failure keywords in stdout/stderr
+    if exit_code == 0:
+        # Crude check, proper parsing (e.g., JUnit XML) is better
+        if "failed" in stdout.lower() or "error" in stdout.lower():
+             test_results["summary"] = "pass_with_failures" # Some tests might have passed
+             error_logs.append(f"Tests ran, but reported failures/errors (Exit Code 0):\nStdout:\n{stdout}\nStderr:\n{stderr}")
+        else:
+             test_results["summary"] = "pass"
+    # Specific exit codes for pytest indicate failures: https://docs.pytest.org/en/7.1.x/reference/exit-codes.html
+    elif exit_code == 1: # Pytest: tests collected and run but some failed
+         test_results["summary"] = "fail"
+         error_logs.append(f"Pytest reported test failures (Exit Code 1):\nStdout:\n{stdout}\nStderr:\n{stderr}")
+    elif exit_code == 5: # Pytest: No tests collected
+         test_results["summary"] = "no_tests_found"
+         error_logs.append(f"Pytest reported no tests collected (Exit Code 5):\nStdout:\n{stdout}\nStderr:\n{stderr}")
+    else: # Other non-zero exit codes often mean execution error
+        test_results["summary"] = "execution_error"
+        error_logs.append(f"Test execution failed (Exit Code {exit_code}):\nStdout:\n{stdout}\nStderr:\n{stderr}")
+
+    # TODO: Add more sophisticated parsing of stdout/stderr or generated report files
+    # (e.g., read a JUnit XML file created within the container in the mounted volume)
+
+    # Determine overall build status based on tests
+    build_status = "Testing Failed"
+    if test_results.get("summary") == "pass":
+        build_status = "Tests Passed"
+
+
+    print(f"--- Exiting Tester Node (Status: {build_status}) ---")
+    return {"test_results": test_results, "error_logs": error_logs, "build_status": build_status}
 
 @traceable(run_type="chain", name="generate_workflow_graph")
 def generate_workflow_graph(task: str, output_folder: Optional[str] = None, save_visualization: bool = True) -> Dict[str, Any]:
@@ -486,8 +517,9 @@ def generate_workflow_graph(task: str, output_folder: Optional[str] = None, save
         current_step="",
         requirements=[],
         design={},
-        implementation_plan=[],
+        project_structure={},
         code_files={},
+        file_dependencies={},
         documentation="",
         messages=[],
         output_folder=output_folder,
@@ -575,8 +607,9 @@ def run_software_dev_workflow(task: str, output_folder: Optional[str] = None, co
         current_step="",
         requirements=[],
         design={},
-        implementation_plan=[],
+        project_structure={},
         code_files={},
+        file_dependencies={},
         documentation="",
         messages=[],
         output_folder=output_folder,
@@ -610,27 +643,12 @@ def run_software_dev_workflow(task: str, output_folder: Optional[str] = None, co
         # Generate a summary of what was done
         summary = "# Software Development Workflow Summary\n\n"
         
-        if result["requirements"]:
-            summary += "## Requirements\n"
-            for req in result["requirements"]:
-                summary += f"- {req}\n"
-            summary += "\n"
-        
-        if result["design"]:
-            summary += "## Design\n"
-            summary += result["design"].get("description", "No design description available.")
-            summary += "\n\n"
-        
         if result["code_files"]:
             summary += "## Files Created\n"
             for file_name in result["code_files"].keys():
                 summary += f"- {file_name}\n"
             summary += "\n"
-        
-        if result["documentation"]:
-            summary += "## Documentation\n"
-            summary += result["documentation"]
-        
+
         # Save the summary to the output folder
         if output_folder:
             with open(os.path.join(output_folder, "workflow_summary.md"), "w") as f:
@@ -657,3 +675,19 @@ def run_software_dev_workflow(task: str, output_folder: Optional[str] = None, co
         agent = SoftwareDevelopmentAgent(output_folder=output_folder)
         response = agent.query(task)
         return response
+
+def test_workflow():
+    """Test function to verify the workflow and catch any serialization issues."""
+    try:
+        # Test simple task
+        task = "Create a simple calculator with add and subtract functions"
+        result = run_software_dev_workflow(task, output_folder="test_output_workflow")
+        print("Test completed successfully")
+        print(result)
+        return True
+    except Exception as e:
+        print(f"Test failed with error: {e}")
+        return False
+
+if __name__ == "__main__":
+    test_workflow()

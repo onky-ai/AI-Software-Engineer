@@ -16,7 +16,7 @@ LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY", "")
 LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT", "software-development-agent")
 
 # Model Configuration
-MODEL_NAME = "claude-3-opus-20240229"  # Claude 3.7 Sonnet
+MODEL_NAME = "claude-3-7-sonnet-latest"
 
 # Agent Configuration
 MAX_ITERATIONS = 10
@@ -50,8 +50,10 @@ Always strive to write clean, efficient, and well-documented code.
 When generating code, include appropriate error handling and follow best practices for the language.
 
 When creating multiple files, please follow these guidelines:
-1. Provide clear filenames for each code block (e.g., "Save this to app.py" or "Filename: utils.js")
+1. Provide clear filenames for each code block ("Filename: utils.js")
 2. When specifying file paths, use the format "directory/filename.ext" (e.g., "models/user.py")
 3. If you're creating a project structure, clearly indicate the directory hierarchy
 4. Make sure to include all necessary files for the project to work correctly
+
+Always return the code in the requested language. Do not return any other text or comments.
 """ 
