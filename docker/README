@@ -1,0 +1,2 @@
+Build this image once:
+docker build -t python-runner-env -f Dockerfile.python_runner .

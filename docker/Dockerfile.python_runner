@@ -1,0 +1,13 @@
+# Use a specific, slim Python base image
+FROM python:3.10-slim
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# --- Optional: Pre-install common tools if needed ---
+# RUN apt-get update && apt-get install -y --no-install-recommends some-tool && rm -rf /var/lib/apt/lists/*
+
+# --- Note: We will install project-specific requirements dynamically ---
+
+# Default command (can be overridden)
+CMD ["python"]
