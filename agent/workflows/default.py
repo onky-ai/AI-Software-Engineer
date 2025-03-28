@@ -1,17 +1,18 @@
-from typing import Dict, List, Any, Optional, TypedDict, Literal
-from langgraph.graph import StateGraph, START, END
 import os
 import sys
+import json
+from typing import Dict, List, Any, Optional, TypedDict
+from langgraph.graph import StateGraph, START, END
+from agent.models.default import RequirementsOutput, ProjectStructureOutput, DesignOutput, DocumentationOutput, FileGenerationOutput
 from langsmith import traceable
-from pydantic import BaseModel, Field
 
 # Add the parent directory to the path so we can import from the root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from agent.agent import SoftwareDevelopmentAgent
-from agent.docker_utils import run_in_docker
+from agent.utils.docker_utils import run_in_docker
 from config import DEFAULT_SYSTEM_PROMPT, LANGCHAIN_PROJECT, LANGCHAIN_ENDPOINT
-from agent.langsmith_utils import is_tracing_enabled, trace_tool_usage, create_trace_id
+from agent.utils.langsmith_utils import is_tracing_enabled, trace_tool_usage, create_trace_id
 
 # Define the state type for our workflow
 class WorkflowState(TypedDict):
@@ -27,23 +28,6 @@ class WorkflowState(TypedDict):
     output_folder: Optional[str]
     trace_id: Optional[str]
 
-# Define the requirements output model
-class RequirementsOutput(BaseModel):
-    requirements: List[str] = Field(description="List of clear requirements extracted from the task")
-    file_dependencies: List[str] = Field(description="Dependencies between requirements", default_factory=list)
-        
-class ProjectStructureOutput(BaseModel):
-    """Output model for the project structure step of the workflow."""
-    files: List[str] = Field(description="List of files to be created", default_factory=list)
-    description: str = Field(description="Description of the files to be created")
-
-class DesignOutput(BaseModel):
-    architecture: str = Field(description="Overview of the system architecture")
-    components: List[str] = Field(description="Main components of the system")
-    data_models: List[str] = Field(description="Data models used in the system")
-    api_endpoints: Optional[List[str]] = Field(default=[], description="API endpoints if applicable")
-    dependencies: List[str] = Field(description="Dependencies and libraries needed")
-        
 
 # Define the workflow steps
 def analyze_requirements(state: WorkflowState) -> WorkflowState:
@@ -65,7 +49,10 @@ def analyze_requirements(state: WorkflowState) -> WorkflowState:
     state["messages"].append({"role": "system", "content": f"Requirements analyzed: {len(state['requirements'])} requirements identified"})
     state["current_step"] = "requirements_analyzed"
     
-    print(f"Analyze Requirements: {state['requirements']}")
+    print("\n=== ANALYZE REQUIREMENTS ===")
+    for i, req in enumerate(state['requirements'], 1):
+        print(f"  {i}. {req}")
+    print("============================\n")
 
     return state
 
@@ -74,6 +61,7 @@ def create_design(state: WorkflowState) -> WorkflowState:
     agent = SoftwareDevelopmentAgent()
     
     requirements_text = "\n".join([f"- {req}" for req in state["requirements"]])
+    
     dependencies_text = "\n".join([f"- {dep}" for dep in state["file_dependencies"]])
 
     prompt = f"""
@@ -85,18 +73,11 @@ def create_design(state: WorkflowState) -> WorkflowState:
 
     {dependencies_text}
 
-    Create a high-level software design that focuses on simplicity
-    1. Architecture overview
-    2. Main components
-    3. Data models
-    4. API endpoints (if applicable)
-    5. Dependencies and libraries needed
-    
-    Provide the design in a structured format.
+    Create a high-level software design that focuses on simplicity.
     """
     
     response = agent.query(prompt, DesignOutput)
-
+    
     state["design"] = {
             "description": response.architecture,
             "components": response.components,
@@ -104,6 +85,7 @@ def create_design(state: WorkflowState) -> WorkflowState:
             "dependencies": response.dependencies,
             "api_endpoints": response.api_endpoints
         }
+
     state["messages"].append({"roke" : "system", "content" : "Design created"})
     state["current_step"] = "desing_created"
 
@@ -213,173 +195,150 @@ def generate_files(state: WorkflowState) -> WorkflowState:
     state["current_step"] = "files_generated"
     return state
 
-# @traceable(run_type="chain", name="verify_completeness")
-# def verify_completeness(state: WorkflowState) -> WorkflowState:
-#     """Verify each file's completeness"""
-#     agent = SoftwareDevelopmentAgent()
+@traceable(run_type="chain", name="verify_completeness")
+def verify_completeness(state: WorkflowState) -> WorkflowState:
+    """Verify each file's completeness"""
+    agent = SoftwareDevelopmentAgent()
     
-#     for file_name, code in state["code_files"].items():
-#         language = file_name.split(".")[-1]
+    for file_name, code in state["code_files"].items():
+        language = file_name.split(".")[-1] if "." in file_name else "txt"
         
-#         prompt = f"""
-#         Verify the completeness of this {language} file:
+        prompt = f"""
+        Verify the completeness of this {language} file:
         
-#         File: {file_name}
-#         Code:
-#         ```{language}
-#         {code}
-#         ```
+        File: {file_name}
+        Code:
+        ```{language}
+        {code}
+        ```
         
-#         Analyze the code for completeness, including imports, dependencies,
-#         function implementations, error handling, and documentation.
-#         """
+        Analyze the code for completeness, including imports, dependencies, function implementations, error handling, and documentation.
+        Provide a detailed assessment with quality scores, missing elements, and suggestions for improvement.
+        """
         
-#         try:
-#             completeness_output = agent.query(prompt)
+        # Use FileGenerationOutput model for structured output
+        completeness_output = agent.query(prompt, FileGenerationOutput)
+        
+        # Check if there are missing elements or low quality scores
+        has_issues = (
+            completeness_output.missing_elements or 
+            completeness_output.suggestions or
+            any(score < 0.8 for score in completeness_output.quality_score.values())
+        )
+        
+        if has_issues:
+            # Generate updated code if issues found
+            missing_elements_text = "\n".join([
+                f"- {element}" for element in completeness_output.missing_elements.get(file_name, [])
+            ])
             
-#             if not completeness_output.complete:
-#                 # Generate updated code if issues found
-#                 missing_elements = completeness_output.missing_elements.get(file_name, [])
-#                 suggestions = completeness_output.suggestions.get(file_name, [])
-                
-#                 update_prompt = f"""
-#                 Update the code for {file_name} to address these issues:
-#                 {completeness_output}
-                
-#                 Original code:
-#                 ```{language}
-#                 {code}
-#                 ```
-#                 """
-                
-#                 file_output = agent.query_with_structured_output(update_prompt, FileGenerationOutput)
-#                 state["code_files"][file_name] = file_output.content
-#                 state["messages"].append({
-#                     "role": "system", 
-#                     "content": f"Updated file {file_name} with completeness score: {completeness_output.quality_score.get(file_name, 0)}"
-#                 })
-#         except Exception as e:
-#             print(f"Error in completeness verification for {file_name}: {e}")
-#             # Fallback to simple verification
-#             response = agent.query(prompt)
-#             if "missing" in response.lower() or "needed" in response.lower():
-#                 updated_code = agent.generate_code(prompt, language, file_name)
-#                 state["code_files"][file_name] = updated_code
-    
-#     state["current_step"] = "completeness_verified"
-#     return state
-
-# @traceable(run_type="chain", name="create_documentation")
-# def create_documentation(state: WorkflowState) -> WorkflowState:
-#     """Create documentation for the project"""
-#     agent = SoftwareDevelopmentAgent()
-    
-#     files_list = "\n".join([f"- {file_name}" for file_name in state["code_files"].keys()])
-#     dependencies = json.dumps(state["file_dependencies"], indent=2)
-    
-#     prompt = f"""
-#     Create comprehensive documentation for this software project:
-    
-#     Requirements:
-#     {chr(10).join([f"- {req}" for req in state["requirements"]])}
-    
-#     Design:
-#     {state["design"]["description"]}
-    
-#     Project Structure:
-#     {state["project_structure"]["description"]}
-    
-#     Files:
-#     {files_list}
-    
-#     Dependencies:
-#     {dependencies}
-#     """
-    
-#     try:
-#         doc_output = agent.query(prompt)
-        
-#         # Create README.md content
-#         documentation = f"""# {doc_output.overview}
-
-# ## Installation
-# {doc_output.installation}
-
-# ## Usage
-# {doc_output.usage}
-
-# ## API Documentation
-# {chr(10).join([f"### {component}{chr(10)}{docs}" for component, docs in doc_output.api_docs.items()])}
-
-# ## Examples
-# {chr(10).join([f"- {example}" for example in doc_output.examples])}
-
-# ## File Structure
-# {chr(10).join([f"- {file}: {desc}" for file, desc in doc_output.file_descriptions.items()])}
-# """
-        
-#         state["documentation"] = documentation
-        
-#         # Save documentation if output folder is specified
-#         if state["output_folder"]:
-#             doc_path = os.path.join(state["output_folder"], "README.md")
-#             with open(doc_path, "w") as f:
-#                 f.write(documentation)
+            suggestions_text = "\n".join([
+                f"- {suggestion}" for suggestion in completeness_output.suggestions.get(file_name, [])
+            ])
             
-#             if is_tracing_enabled() and state.get("trace_id"):
-#                 trace_tool_usage(
-#                     tool_name="file_write",
-#                     input_data={
-#                         "file_name": "README.md",
-#                         "content": documentation
-#                     },
-#                     output_data=f"File README.md created successfully",
-#                     metadata={
-#                         "step": "create_documentation",
-#                         "file_name": "README.md",
-#                         "trace_id": state["trace_id"]
-#                     }
-#                 )
-        
-#         state["messages"].append({"role": "system", "content": "Documentation created"})
-#         state["current_step"] = "documentation_created"
-        
-#     except Exception as e:
-#         print(f"Error in documentation creation: {e}")
-#         # Fallback to simple documentation
-#         response = agent.query(prompt)
-#         state["documentation"] = response
-        
-#         if state["output_folder"]:
-#             doc_path = os.path.join(state["output_folder"], "README.md")
-#             with open(doc_path, "w") as f:
-#                 f.write(response)
+            update_prompt = f"""
+            Update the code for {file_name} to address these issues:
+            
+            Missing elements:
+            {missing_elements_text}
+            
+            Suggestions:
+            {suggestions_text}
+            
+            Original code:
+            ```{language}
+            {code}
+            ```
+            
+            Provide only the complete, updated code with all issues fixed.
+            """
+            
+            file_output = agent.query(update_prompt, FileGenerationOutput)
+            state["code_files"][file_name] = file_output.content
+            
+            # Add message about the update
+            quality_score = completeness_output.quality_score.get(file_name, 0)
+            state["messages"].append({
+                "role": "system", 
+                "content": f"Updated file {file_name} with completeness score: {quality_score}"
+            })
     
-#     return state
+    state["current_step"] = "completeness_verified"
+    return state
 
-@traceable(run_type="chain", name="router")
-def router(state: WorkflowState) -> Literal["analyze_requirements", "create_design", "propose_project_structure", "generate_files", "verify_dependencies", "verify_completeness", "create_documentation", "END"]:
-    """Route to the next step based on the current state"""
-    current_step = state.get("current_step", "")
+@traceable(run_type="chain", name="create_documentation")
+def create_documentation(state: WorkflowState) -> WorkflowState:
+    """Create documentation for the project"""
+    agent = SoftwareDevelopmentAgent()
     
-    if current_step == "":
-        return "analyze_requirements"
-    elif current_step == "requirements_analyzed":
-        return "create_design"
-    elif current_step == "design_created":
-        return "propose_project_structure"
-    elif current_step == "project_structure_proposed":
-        return "generate_files"
-    elif current_step == "files_generated":
-        return "verify_dependencies"
-    elif current_step == "dependencies_verified":
-        return "verify_completeness"
-    elif current_step == "completeness_verified":
-        return "create_documentation"
-    elif current_step == "documentation_created":
-        return "END"
-    else:
-        return "analyze_requirements"
+    files_list = "\n".join([f"- {file_name}" for file_name in state["code_files"].keys()])
+    dependencies = json.dumps(state["file_dependencies"], indent=2)
+    
+    prompt = f"""
+    Create comprehensive documentation for this software project:
+    
+    Requirements:
+    {chr(10).join([f"- {req}" for req in state["requirements"]])}
+    
+    Design:
+    {state["design"]["description"]}
+    
+    Project Structure:
+    {state["project_structure"]["description"]}
+    
+    Files:
+    {files_list}
+    
+    Dependencies:
+    {dependencies}
+    """
+    
+    try:
+        doc_output = agent.query(prompt, DocumentationOutput)
+        
+        # Create README.md content
+        documentation = f"""# {doc_output.overview}
+
+## Installation
+{doc_output.installation}
+
+## Usage
+{doc_output.usage}
+
+## API Documentation
+{chr(10).join([f"### {component}{chr(10)}{docs}" for component, docs in doc_output.api_docs.items()])}
+
+## Examples
+{chr(10).join([f"- {example}" for example in doc_output.examples])}
+
+## File Structure
+{chr(10).join([f"- {file}: {desc}" for file, desc in doc_output.file_descriptions.items()])}
+"""
+        
+        state["documentation"] = documentation
+        
+        # Save documentation if output folder is specified
+        if state["output_folder"]:
+            doc_path = os.path.join(state["output_folder"], "README.md")
+            with open(doc_path, "w") as f:
+                f.write(documentation)
+            
+  
+        state["messages"].append({"role": "system", "content": "Documentation created"})
+        state["current_step"] = "documentation_created"
+        
+    except Exception as e:
+        print(f"Error in documentation creation: {e}")
+        # Fallback to simple documentation
+        response = agent.query(prompt)
+        state["documentation"] = response
+        
+        if state["output_folder"]:
+            doc_path = os.path.join(state["output_folder"], "README.md")
+            with open(doc_path, "w") as f:
+                f.write(response)
+    
+    return state
 
 # Create the workflow graph with only 2 nodes: create_design and generate_files
 @traceable(run_type="chain", name="create_workflow_graph")
@@ -392,14 +351,17 @@ def create_workflow_graph() -> StateGraph:
     workflow.add_node("create_design", create_design)
     workflow.add_node("propose_project_structure", propose_project_structure)
     workflow.add_node("generate_files", generate_files)
+    workflow.add_node("create_documentation", create_documentation)
+    workflow.add_node("verify_completeness", verify_completeness)
 
     # Add edge from START to first node
     workflow.add_edge(START, "analyze_requirements")
     workflow.add_edge("analyze_requirements", "create_design")
     workflow.add_edge("create_design", "propose_project_structure")
     workflow.add_edge("propose_project_structure", "generate_files")
-    workflow.add_edge("generate_files", END)
-
+    workflow.add_edge("generate_files", "verify_completeness")
+    workflow.add_edge("verify_completeness", "create_documentation")
+    workflow.add_edge("create_documentation", END)
 
     return workflow
 
@@ -675,19 +637,3 @@ def run_software_dev_workflow(task: str, output_folder: Optional[str] = None, co
         agent = SoftwareDevelopmentAgent(output_folder=output_folder)
         response = agent.query(task)
         return response
-
-def test_workflow():
-    """Test function to verify the workflow and catch any serialization issues."""
-    try:
-        # Test simple task
-        task = "Create a simple calculator with add and subtract functions"
-        result = run_software_dev_workflow(task, output_folder="test_output_workflow")
-        print("Test completed successfully")
-        print(result)
-        return True
-    except Exception as e:
-        print(f"Test failed with error: {e}")
-        return False
-
-if __name__ == "__main__":
-    test_workflow()

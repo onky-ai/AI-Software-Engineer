@@ -19,7 +19,6 @@ def main():
     response = run_software_dev_workflow(task, output_folder="generated_flask_app")
     
     # Print the response
-    print("\nWorkflow Response:")
     print(response)
 
 if __name__ == "__main__":
