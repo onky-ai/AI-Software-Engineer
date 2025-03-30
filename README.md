@@ -1,10 +1,10 @@
-# Software Development Agent
+# AI Software Engineer
 
 A software development agent built with LangChain and LangGraph, powered by Claude 3.7 Sonnet.
 
 ## Overview
 
-This agent is designed to assist in developing custom software by leveraging the capabilities of Claude 3.7 Sonnet through LangChain and LangGraph frameworks.
+This agent is designed to assist in developing custom software by leveraging the capabilities of Claude 3.7 Sonnet through LangChain and LangGraph frameworks. It provides a structured approach to software development, from requirements analysis to code generation and verification.
 
 ## Features
 
@@ -13,14 +13,22 @@ This agent is designed to assist in developing custom software by leveraging the
 - Implements LangGraph for complex agent workflows
 - Integrates with LangSmith for tracing, monitoring, and debugging
 - Assists in software development tasks
+- Supports multiple development modes (interactive, workflow, compile)
+- Provides comprehensive code verification and completeness checks
 
 ## Setup
 
-1. Clone this repository
-2. Install dependencies:
+1. Clone this repository:
+   ```bash
+   git clone git@github.com:onky-ai/AI-Software-Engineer.git
+   cd AI-Software-Engineer
    ```
+
+2. Install dependencies:
+   ```bash
    pip install -r requirements.txt
    ```
+
 3. Create a `.env` file with your API keys:
    ```
    ANTHROPIC_API_KEY=your_api_key_here
@@ -31,8 +39,9 @@ This agent is designed to assist in developing custom software by leveraging the
    LANGCHAIN_API_KEY=your_langsmith_api_key_here
    LANGCHAIN_PROJECT=software-development-agent
    ```
+
 4. Run the agent:
-   ```
+   ```bash
    python main.py
    ```
 
@@ -44,7 +53,7 @@ The agent supports multiple modes of operation:
 
 Run the agent in interactive mode to engage in a conversation:
 
-```
+```bash
 python main.py --mode=interactive --folder=output_folder
 ```
 
@@ -52,7 +61,7 @@ python main.py --mode=interactive --folder=output_folder
 
 Run the agent in workflow mode to execute the full development workflow:
 
-```
+```bash
 python main.py --mode=workflow --query="Create a simple calculator in Python" --folder=output_folder
 ```
 
@@ -60,7 +69,7 @@ python main.py --mode=workflow --query="Create a simple calculator in Python" --
 
 Run the agent in compile-only mode to generate and visualize the workflow graph without executing it:
 
-```
+```bash
 python main.py --mode=compile --query="Create a simple calculator in Python" --folder=output_folder
 ```
 
@@ -86,13 +95,40 @@ With LangSmith integration enabled, you can:
 
 ## Project Structure
 
-- `main.py`: Entry point for the application
-- `agent/`: Core agent implementation
-  - `agent.py`: Main agent definition
-  - `tools.py`: Custom tools for the agent
-  - `workflows/`: LangGraph workflows
-    - `software_dev_workflow.py`: Simple workflow implementation
-    - `langgraph_dev_workflow.py`: Advanced workflow with LangGraph
-  - `langsmith_utils.py`: Utilities for LangSmith integration
-- `config.py`: Configuration settings
-- `utils.py`: Utility functions 
+```
+agent/
+├── __init__.py
+├── agent.py              # Main agent implementation
+├── models/              # Pydantic models for structured outputs
+│   └── default.py
+├── utils/              # Utility functions
+│   ├── __init__.py
+│   ├── docker_utils.py
+│   └── langsmith_utils.py
+└── workflows/          # LangGraph workflows
+    ├── __init__.py
+    ├── default.py
+    └── langgraph_dev_workflow.py
+├── main.py            # Entry point for the application
+├── config.py          # Configuration settings
+└── requirements.txt   # Project dependencies
+```
+
+## Development Workflow
+
+The agent follows a structured development workflow:
+
+1. **Requirements Analysis**: Analyzes the task and extracts clear requirements
+2. **Design Creation**: Creates a detailed design based on requirements
+3. **Project Structure**: Proposes a suitable project structure
+4. **Code Generation**: Generates code files based on the design
+5. **Completeness Verification**: Verifies and improves code completeness
+6. **Documentation**: Creates comprehensive documentation
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details. 
