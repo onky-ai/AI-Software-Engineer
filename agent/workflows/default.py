@@ -174,28 +174,11 @@ def generate_files(state: WorkflowState) -> WorkflowState:
             with open(file_path, "w") as f:
                 f.write(content)
             
-            # Trace tool usage for file creation
-            if is_tracing_enabled() and state.get("trace_id"):
-                trace_tool_usage(
-                    tool_name="file_write",
-                    input_data={
-                        "file_name": file_name,
-                        "content": content
-                    },
-                    output_data=f"File {file_name} created successfully",
-                    metadata={
-                        "step": "generate_files",
-                        "file_name": file_name,
-                        "trace_id": state["trace_id"]
-                    }
-                )
-        
         state["code_files"][file_name] = content
     
     state["current_step"] = "files_generated"
     return state
 
-@traceable(run_type="chain", name="verify_completeness")
 def verify_completeness(state: WorkflowState) -> WorkflowState:
     """Verify each file's completeness"""
     agent = SoftwareDevelopmentAgent()
@@ -217,7 +200,7 @@ def verify_completeness(state: WorkflowState) -> WorkflowState:
         """
         
         # Use FileGenerationOutput model for structured output
-        completeness_output = agent.query(prompt, FileGenerationOutput)
+        completeness_output = agent.query(user_input=prompt, output_schema=FileGenerationOutput, store_history=False)
         
         # Check if there are missing elements or low quality scores
         has_issues = (
@@ -229,11 +212,11 @@ def verify_completeness(state: WorkflowState) -> WorkflowState:
         if has_issues:
             # Generate updated code if issues found
             missing_elements_text = "\n".join([
-                f"- {element}" for element in completeness_output.missing_elements.get(file_name, [])
+                f"- {element}" for element in completeness_output.missing_elements
             ])
             
             suggestions_text = "\n".join([
-                f"- {suggestion}" for suggestion in completeness_output.suggestions.get(file_name, [])
+                f"- {suggestion}" for suggestion in completeness_output.suggestions
             ])
             
             update_prompt = f"""
@@ -253,9 +236,18 @@ def verify_completeness(state: WorkflowState) -> WorkflowState:
             Provide only the complete, updated code with all issues fixed.
             """
             
-            file_output = agent.query(update_prompt, FileGenerationOutput)
+            file_output = agent.query(user_input=update_prompt, output_schema=FileGenerationOutput, store_history=False)
             state["code_files"][file_name] = file_output.content
             
+            # Save the file
+            if state["output_folder"]:
+                # Create any necessary directories
+                file_path = os.path.join(state["output_folder"], file_name)
+                os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+                
+                with open(file_path, "w") as f:
+                    f.write(file_output.content)
+        
             # Add message about the update
             quality_score = completeness_output.quality_score.get(file_name, 0)
             state["messages"].append({

@@ -84,7 +84,7 @@ class SoftwareDevelopmentAgent:
     # This method is used to query the agent with a user input.
     # It stores the user input in the history.
     # It is used to generate code for the code generation node in the workflow.
-    def query(self, user_input: str, output_schema: Optional[BaseModel] = None) -> Any:
+    def query(self, user_input: str, output_schema: Optional[BaseModel] = None, store_history: bool = True) -> Any:
         """
         Query the agent with a user input.
         
@@ -95,68 +95,41 @@ class SoftwareDevelopmentAgent:
         Returns:
             The agent's response, either as a string or structured according to output_schema
         """
-        # Add the user input to the history
-        self.add_to_history("human", user_input)
+
         
         # Create messages for the LLM
         messages = [SystemMessage(content=self.system_prompt)]
         
+        # Add the user input to the history
+        if store_history:
+            self.add_to_history("human", user_input)
+        else:
+            messages.append(HumanMessage(content=user_input))
+
         # Add the conversation history
         for message in self.history:
             if message["role"] == "human":
                 messages.append(HumanMessage(content=message["content"]))
             elif message["role"] == "assistant":
                 messages.append(AIMessage(content=message["content"]))
-        
+              
         # Get the response from the LLM
         if output_schema:
             # Get structured response if schema is provided
             llm_with_structured_output = self.llm.with_structured_output(output_schema)
             response = llm_with_structured_output.invoke(messages)
             # Add the raw response to the history (convert structured output to string)
-            self.add_to_history("assistant", json.dumps(response.model_dump(), indent=2))
+            if store_history:
+                self.add_to_history("assistant", json.dumps(response.model_dump(), indent=2))
         else:
             # Get regular response
             response = self.llm.invoke(messages)
             # Add the response to the history
-            self.add_to_history("assistant", response.content)
+            if store_history:
+                self.add_to_history("assistant", response.content)
             
         return response if output_schema else response.content
   
-    # # This method is used to query the agent with a user input and get a structured output.
-    # def query_with_structured_output(self, user_input: str, output_schema: BaseModel) -> Dict:
-    #     """
-    #     Query the agent with a user input and get a structured output.
-        
-    #     Args:
-    #         user_input: The user input
-    #         output_schema: The schema for the structured output
-            
-    #     Returns:
-    #         The agent's response as a structured output according to the schema
-    #     """
-    #     # Add the user input to the history
-    #     self.add_to_history("human", user_input)
-        
-    #     # Create messages for the LLM
-    #     messages = [SystemMessage(content=self.system_prompt)]
-        
-    #     # Add the conversation history
-    #     for message in self.history:
-    #         if message["role"] == "human":
-    #             messages.append(HumanMessage(content=message["content"]))
-    #         elif message["role"] == "assistant":
-    #             messages.append(AIMessage(content=message["content"]))
-        
-    #     # Get the structured response from the LLM
-    #     llm_with_structured_output = self.llm.with_structured_output(output_schema)
-    #     structured_response = llm_with_structured_output.invoke(messages)
-        
-    #     # Add the raw response to the history (convert structured output to string)
-    #     # Convert BaseModel to dict first, then to JSON string
-    #     self.add_to_history("assistant", json.dumps(structured_response.model_dump(), indent=2))
-        
-    #     return structured_response
 
     def generate_code(self, prompt: str, language: str, filename: Optional[str] = None) -> str:
         """
