@@ -8,6 +8,8 @@ This agent is designed to assist in developing custom software by leveraging the
 
 ## Features
 
+### Open Source Features
+
 - Connects to Claude 3.7 Sonnet API
 - Uses LangChain for structured interactions with the LLM
 - Implements LangGraph for complex agent workflows
@@ -15,6 +17,22 @@ This agent is designed to assist in developing custom software by leveraging the
 - Assists in software development tasks
 - Supports multiple development modes (interactive, workflow, compile)
 - Provides comprehensive code verification and completeness checks
+- Docker integration for secure code execution
+- Comprehensive testing framework
+
+### Enterprise Features
+
+For enterprise customers, additional features are available under a separate license:
+
+- Advanced security and compliance features
+- Multi-tenant architecture support
+- Enterprise-grade authentication and authorization
+- Advanced monitoring and analytics
+- Priority support and SLA guarantees
+- Custom integrations and workflows
+- On-premises deployment options
+
+For enterprise licensing inquiries, contact: enterprise@onky.ai
 
 ## Setup
 
@@ -131,4 +149,16 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project uses a dual licensing model:
+
+### Open Source License
+
+The code in this repository, except for the contents of the "enterprise" directory, is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0). This applies to the open core components of the software.
+
+### Enterprise License
+
+All code in the "enterprise" directory and enterprise-specific features are licensed under a separate Enterprise License. See `enterprise/LICENSE.md` for details.
+
+For enterprise licensing inquiries, contact: enterprise@onky.ai
+
+See the LICENSE file for the complete AGPL-3.0 license text. 
